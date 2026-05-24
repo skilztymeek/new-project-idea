@@ -4,7 +4,7 @@ A simple demo project for learning Git and GitHub workflows.
 
 ## Getting Started
 
-1. Clone the repo:
+1. Clone the repoa:
    ```bash
    git clone <your-repo-url>
    cd new-project-idea
