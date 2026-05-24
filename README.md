@@ -19,7 +19,10 @@ That's it! No dependencies to install — just Node.js.
 
 ## What It Does
 
-Prints a random greeting to the terminal. Simple enough to focus on the Git workflow instead of the code.
+- **`npm start`** — Prints a random greeting to the terminal
+- **`npm run quiz`** — A quick 5-question coding trivia quiz
+
+Simple enough to focus on the Git workflow instead of the code.
 
 ## Next Steps
 
