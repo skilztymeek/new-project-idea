@@ -1,0 +1,316 @@
+# Implementation Plan: NYC Subway Virtual Tour
+
+## Overview
+
+This plan breaks the NYC Subway Virtual Tour into incremental coding tasks, building from the data layer and backend services up through the client UI, monetization, offline support, and accessibility. Each task builds on the previous ones and ends with all components wired together. The stack is TypeScript throughout: React Native + Expo for mobile, React for web, and Node.js for backend services.
+
+## Tasks
+
+- [x] 1. Project scaffolding and shared type definitions
+  - Initialize monorepo structure (e.g., Turborepo or Nx) with packages: `mobile`, `web`, `api`, `shared`
+  - Define all shared TypeScript interfaces in `shared/src/types.ts`: `Station`, `Scene`, `Hotspot`, `User`, `Favorite`, `HistoryEntry`, `DownloadManifest`
+  - Set up Jest + fast-check in `shared` package for property-based tests
+  - Set up ESLint, Prettier, and TypeScript `strict` mode across all packages
+  - _Requirements: 1.1, 2.1, 3.1, 4.1, 5.1_
+
+- [x] 2. Database schema and migrations
+  - [x] 2.1 Create PostgreSQL schema migrations for all tables
+    - Write migration files for `users`, `stations`, `scenes`, `hotspots`, `favorites`, `history` tables
+    - Add `tsvector` full-text search index on `stations(name, borough, lines)`
+    - Add unique constraint on `favorites(user_id, station_id)` and upsert logic for `history`
+    - _Requirements: 1.1, 1.2, 5.1, 6.1, 6.3, 6.4_
+  - [x] 2.2 Seed station data from MTA GTFS static feed
+    - Write a script to parse MTA GTFS `stops.txt` and populate the `stations` table
+    - Verify at least 400 stations are imported
+    - _Requirements: 1.1_
+
+- [x] 3. Auth Service
+  - [x] 3.1 Implement email/password registration and login endpoints
+    - `POST /auth/register` — validate email format (RFC 5322 simplified) and password ≥ 8 chars, hash password with bcrypt, insert user, return JWT
+    - `POST /auth/login` — verify credentials, return JWT
+    - `POST /auth/logout` — invalidate session in Redis
+    - `GET /auth/session` — validate JWT and return user info
+    - JWT: RS256 signed, 30-day expiry, payload includes `userId`, `tier`, `exp`
+    - Return `409 Conflict` for duplicate email; `401 Unauthorized` for invalid credentials (generic message)
+    - _Requirements: 5.1, 5.3, 5.4, 5.5_
+  - [ ]* 3.2 Write property test: email and password validation is consistent (Property 7)
+    - **Property 7: Email and password validation is consistent**
+    - **Validates: Requirements 5.3**
+  - [ ]* 3.3 Write property test: duplicate registration is always rejected (Property 8)
+    - **Property 8: Duplicate registration is always rejected**
+    - **Validates: Requirements 5.4**
+  - [ ]* 3.4 Write property test: session tokens are valid for exactly 30 days (Property 9)
+    - **Property 9: Session tokens are valid for exactly 30 days**
+    - **Validates: Requirements 5.5**
+  - [x] 3.5 Implement OAuth 2.0 endpoints for Google and Apple sign-in
+    - `POST /auth/oauth/{provider}` — exchange OAuth code for user profile, upsert user record, return JWT
+    - _Requirements: 5.2_
+
+- [ ] 4. Station Service
+  - [x] 4.1 Implement station index and search endpoints
+    - `GET /stations` — paginated station list
+    - `GET /stations/search?q=&borough=&line=` — full-text search using PostgreSQL `tsvector`; return suggestions (nearby by geo or popular by visit count) when no results found; target ≤ 500ms p95
+    - `GET /stations/{id}` — station detail with scene list
+    - `GET /stations/{id}/scenes/{sceneId}` — scene metadata with hotspots
+    - _Requirements: 1.1, 1.2, 1.3, 1.6_
+  - [ ]* 4.2 Write property test: search results always match the query (Property 1)
+    - **Property 1: Search results always match the query**
+    - **Validates: Requirements 1.2**
+  - [x] 4.3 Implement MTA real-time arrivals endpoint
+    - `GET /stations/{id}/arrivals` — fetch and parse MTA GTFS-RT protobuf feed; cache in Redis for 30 seconds
+    - Return `503` with user-facing message when GTFS-RT feed is unreachable
+    - _Requirements: 4.4, 4.5_
+  - [ ] 4.4 Implement MTA static data caching
+    - Cache station metadata in Redis (TTL 24h); return last-known data with `stale: true` and `lastUpdatedAt` when feed is unavailable
+    - _Requirements: 4.3_
+
+- [ ] 5. User Service
+  - [ ] 5.1 Implement favorites endpoints
+    - `GET /users/{id}/favorites` — list favorites
+    - `POST /users/{id}/favorites` — add favorite (stationId); enforce auth middleware
+    - `DELETE /users/{id}/favorites/{stationId}` — remove favorite
+    - _Requirements: 6.1, 6.2, 6.6_
+  - [ ]* 5.2 Write property test: favorites round-trip (Property 11)
+    - **Property 11: Favorites round-trip (add then query)**
+    - **Validates: Requirements 6.1, 6.2**
+  - [ ]* 5.3 Write property test: favorites removal is immediate and complete (Property 12)
+    - **Property 12: Favorites removal is immediate and complete**
+    - **Validates: Requirements 6.6**
+  - [ ] 5.4 Implement browsing history endpoints
+    - `GET /users/{id}/history` — list history (last 50, descending by `visitedAt`)
+    - `POST /users/{id}/history` — upsert visit (update `visitedAt` if station already in history; evict oldest entry when count exceeds 50)
+    - _Requirements: 6.3, 6.4, 6.5_
+  - [ ]* 5.5 Write property test: history never exceeds 50 entries (Property 13)
+    - **Property 13: History never exceeds 50 entries**
+    - **Validates: Requirements 6.3**
+  - [ ]* 5.6 Write property test: history deduplication on re-visit (Property 14)
+    - **Property 14: History deduplication on re-visit**
+    - **Validates: Requirements 6.4**
+
+- [ ] 6. Checkpoint — backend services
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 7. Subscription Service
+  - [ ] 7.1 Implement RevenueCat webhook handler
+    - `POST /webhooks/revenuecat` — handle `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`, `EXPIRATION`, `BILLING_ISSUE` events
+    - Update `users.tier` and `premiumExpiresAt` accordingly; set `billingIssue` flag on `BILLING_ISSUE`
+    - _Requirements: 8.1, 8.3, 8.4, 8.6_
+  - [ ]* 7.2 Write property test: subscription expiry reverts user to free tier (Property 20)
+    - **Property 20: Subscription expiry reverts user to free tier**
+    - **Validates: Requirements 8.4**
+  - [ ]* 7.3 Write property test: subscription status display is accurate (Property 21)
+    - **Property 21: Subscription status display is accurate**
+    - **Validates: Requirements 8.5**
+
+- [ ] 8. Ad Engine (client-side logic)
+  - [ ] 8.1 Implement ad frequency counter and banner/interstitial display logic
+    - Write `AdEngine` class/module in `shared` with methods: `shouldShowBanner(tier, screen)`, `shouldShowInterstitial(tier, transitionCount)`, `shouldFilterAd(adMetadata)`
+    - Banner shown on non-immersive screens for `free` tier; interstitial shown after every 5th scene transition for `free` tier; no ads for `premium` tier
+    - Filter ads with categories: "adult content", "gambling", "illegal services"
+    - _Requirements: 7.1, 7.2, 7.3, 7.5_
+  - [ ]* 8.2 Write property test: free-tier users always see ads on non-immersive screens (Property 15)
+    - **Property 15: Free-tier users always see ads on non-immersive screens**
+    - **Validates: Requirements 7.1**
+  - [ ]* 8.3 Write property test: interstitial appears at every 5th scene transition (Property 16)
+    - **Property 16: Interstitial appears at every 5th scene transition for free-tier users**
+    - **Validates: Requirements 7.2**
+  - [ ]* 8.4 Write property test: premium users never see advertisements (Property 17)
+    - **Property 17: Premium users never see advertisements**
+    - **Validates: Requirements 7.3, 8.3**
+  - [ ]* 8.5 Write property test: ad content filter rejects prohibited categories (Property 19)
+    - **Property 19: Ad content filter rejects prohibited categories**
+    - **Validates: Requirements 7.5**
+  - [ ] 8.6 Integrate Google AdMob SDK in mobile app
+    - Wire `AdEngine` logic to AdMob banner and interstitial ad units using the ad unit IDs from the backend Ad Service config endpoint
+    - Render dismiss control within 5 seconds of interstitial display
+    - _Requirements: 7.4_
+  - [ ]* 8.7 Write property test: ad dismiss option appears within 5 seconds (Property 18)
+    - **Property 18: Ad dismiss option appears within 5 seconds**
+    - **Validates: Requirements 7.4**
+
+- [ ] 9. Viewer component (web — React + Photo Sphere Viewer)
+  - [ ] 9.1 Implement the web Viewer component wrapping PSV
+    - Create `Viewer` React component accepting `ViewerProps` interface
+    - Integrate `MarkersPlugin` for hotspot overlays at specified yaw/pitch coordinates
+    - Integrate `VirtualTourPlugin` for scene-to-scene transitions with smooth animation
+    - Enforce FOV bounds: clamp field of view to [60°, 120°] on all zoom events
+    - _Requirements: 2.1, 2.2, 2.4, 2.5, 2.6_
+  - [ ]* 9.2 Write property test: FOV stays within bounds after any zoom gesture (Property 3)
+    - **Property 3: FOV stays within bounds after any zoom gesture**
+    - **Validates: Requirements 2.4**
+  - [ ]* 9.3 Write property test: hotspot navigation always loads the correct linked scene (Property 4)
+    - **Property 4: Hotspot navigation always loads the correct linked scene**
+    - **Validates: Requirements 2.6**
+  - [ ] 9.4 Implement scene error handling and retry logic in Viewer
+    - Display error state with "Retry" button if scene fails to load within 10 seconds
+    - Retry with exponential backoff (1s, 2s, 4s) up to 3 attempts
+    - _Requirements: 2.7_
+
+- [ ] 10. Viewer component (mobile — React Native / Expo)
+  - [ ] 10.1 Implement the mobile Viewer component
+    - Integrate `react-native-panorama-view` (or WebView embedding PSV) for 360° rendering
+    - Handle touch gestures (swipe, pinch-to-zoom) and gyroscope input via Expo sensors
+    - Enforce FOV bounds [60°, 120°] and maintain ≥ 30 FPS on reference hardware
+    - Render hotspot overlays and wire `onHotspotTap` callback
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
+  - [ ] 10.2 Implement reduced motion support in Viewer
+    - Read OS reduced motion setting via `AccessibilityInfo.isReduceMotionEnabled()`
+    - When enabled, substitute animated scene transitions with a direct cut
+    - Pass `reducedMotion` prop through `ViewerProps`
+    - _Requirements: 10.5_
+  - [ ]* 10.3 Write property test: reduced motion disables animated transitions (Property 26)
+    - **Property 26: Reduced motion disables animated transitions**
+    - **Validates: Requirements 10.5**
+
+- [ ] 11. Station map view and search UI
+  - [ ] 11.1 Implement the station map screen
+    - Render a map (e.g., react-native-maps / Mapbox) with markers for all stations from the station index
+    - On marker tap, display a preview card with station name, available lines, and "Enter Tour" button
+    - _Requirements: 1.4, 1.5_
+  - [ ]* 11.2 Write property test: station preview card contains required fields (Property 2)
+    - **Property 2: Station preview card contains required fields**
+    - **Validates: Requirements 1.5**
+  - [ ] 11.3 Implement the search screen
+    - Search input with debounce calling `GET /stations/search`
+    - Display results list; show "no results found" message and suggestions when empty
+    - On result tap, navigate to station primary scene
+    - _Requirements: 1.2, 1.3, 1.6_
+
+- [ ] 12. Station navigation UI (mini-map and breadcrumb)
+  - [ ] 12.1 Implement the mini-map overlay component
+    - Render station floor plan SVG as an overlay within the Viewer screen
+    - Highlight the current scene's `minimapPosition` on the floor plan
+    - On tap, expand to full-screen layout view with all scenes marked
+    - _Requirements: 3.1, 3.2, 3.3_
+  - [ ]* 12.2 Write property test: scene navigation updates the mini-map (Property 5)
+    - **Property 5: Scene navigation updates the mini-map**
+    - **Validates: Requirements 3.5**
+  - [ ] 12.3 Implement breadcrumb / area label display
+    - Show current scene's `areaLabel` as a persistent label on the Viewer screen
+    - Update label on every scene transition
+    - _Requirements: 3.4, 3.5_
+
+- [ ] 13. Station information panel
+  - [ ] 13.1 Implement the collapsible station info panel
+    - Collapsed state: station name, serving lines, borough, ADA accessibility status
+    - Expanded state: opening year, notable features, service advisories from MTA feed
+    - Show last-cached data with `lastUpdatedAt` timestamp when MTA feed is unavailable
+    - _Requirements: 4.1, 4.2, 4.3_
+  - [ ]* 13.2 Write property test: station info panel contains all required fields (Property 6)
+    - **Property 6: Station info panel contains all required fields**
+    - **Validates: Requirements 4.1, 4.2**
+  - [ ] 13.3 Implement real-time arrivals display
+    - Fetch `GET /stations/{id}/arrivals` and render arrival times in the info panel
+    - Show "Live arrivals temporarily unavailable" when the endpoint returns 503
+    - _Requirements: 4.4, 4.5_
+
+- [ ] 14. User account screens
+  - [ ] 14.1 Implement registration and login screens
+    - Registration form: email + password with client-side validation (email format, password ≥ 8 chars)
+    - Login form: email + password
+    - OAuth sign-in buttons for Google and Apple
+    - Handle `409 Conflict` (duplicate email) and `401 Unauthorized` error states
+    - _Requirements: 5.1, 5.2, 5.3, 5.4_
+  - [ ] 14.2 Implement session management
+    - Store JWT in secure storage (`expo-secure-store`)
+    - On `401 Unauthorized` response, clear token and redirect to login screen
+    - _Requirements: 5.6, 5.7_
+  - [ ] 14.3 Implement account settings screen
+    - Display current subscription status and renewal date
+    - Trigger RevenueCat purchase flow for monthly/annual subscription
+    - Show in-app notification when `billingIssue` flag is set
+    - _Requirements: 8.1, 8.2, 8.5, 8.6_
+  - [ ]* 14.4 Write property test: unauthenticated users can access any scene (Property 10)
+    - **Property 10: Unauthenticated users can access any scene**
+    - **Validates: Requirements 5.7**
+
+- [ ] 15. Favorites and history screens
+  - [ ] 15.1 Implement favorites UI
+    - "Favorite" toggle button on station info panel; calls `POST` / `DELETE /users/{id}/favorites`
+    - Dedicated favorites list screen showing saved stations
+    - Reflect add/remove immediately in UI (optimistic update)
+    - _Requirements: 6.1, 6.2, 6.5, 6.6_
+  - [ ] 15.2 Implement browsing history UI
+    - Record visit on scene load via `POST /users/{id}/history`
+    - Dedicated history list screen showing last 50 stations, sorted by most recent
+    - _Requirements: 6.3, 6.4, 6.5_
+
+- [ ] 16. Checkpoint — client UI and services wired
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 17. Offline Download Manager (mobile, Premium only)
+  - [ ] 17.1 Implement download manager module
+    - Use `expo-file-system` to download station packages (panoramic tiles + metadata JSON)
+    - Track download state in SQLite via `expo-sqlite` using the `DownloadManifest` schema
+    - Show progress indicator and estimated download size before confirming download
+    - _Requirements: 9.1, 9.2_
+  - [ ] 17.2 Implement offline scene loading
+    - Before fetching from CDN, check `DownloadManifest` for `status === "complete"`
+    - If complete and device is offline, load panoramic tiles and metadata from local file system
+    - If not downloaded and offline, show "This station isn't available offline" message
+    - _Requirements: 9.3, 9.4_
+  - [ ]* 17.3 Write property test: offline navigation works for all downloaded scenes (Property 22)
+    - **Property 22: Offline navigation works for all downloaded scenes**
+    - **Validates: Requirements 9.3**
+  - [ ] 17.4 Implement storage management UI
+    - Display total storage used by downloaded stations (sum of `totalBytes` for completed manifests)
+    - Allow deletion of individual station packages (delete files + update manifest)
+    - _Requirements: 9.5_
+  - [ ]* 17.5 Write property test: storage display reflects actual downloaded content (Property 23)
+    - **Property 23: Storage display reflects actual downloaded content**
+    - **Validates: Requirements 9.5**
+
+- [ ] 18. Accessibility implementation
+  - [ ] 18.1 Add accessibility labels to all non-text UI elements
+    - Audit all non-immersive screens; add `accessibilityLabel` (iOS) / `contentDescription` (Android) to every non-text element
+    - _Requirements: 10.1, 10.2_
+  - [ ]* 18.2 Write property test: all non-text UI elements have text alternatives (Property 24)
+    - **Property 24: All non-text UI elements have text alternatives**
+    - **Validates: Requirements 10.2**
+  - [ ] 18.3 Implement screen reader announcements in Viewer
+    - Announce `areaLabel` on scene load via `AccessibilityInfo.announceForAccessibility`
+    - Expose all hotspot `label` values in the accessibility tree
+    - _Requirements: 10.3_
+  - [ ]* 18.4 Write property test: screen reader receives scene label and hotspot directions (Property 25)
+    - **Property 25: Screen reader receives scene label and hotspot directions**
+    - **Validates: Requirements 10.3**
+  - [ ] 18.5 Implement dynamic text size support
+    - Use relative font units (`sp` / `em`) and respect OS text size settings on all non-immersive screens
+    - _Requirements: 10.4_
+  - [ ] 18.6 Integrate axe-core accessibility audit into CI
+    - Add `jest-axe` or `axe-core` to the web test suite; run automated WCAG 2.1 AA audit on search, station info, and account screens
+    - _Requirements: 10.1_
+
+- [ ] 19. Content Ingestion Pipeline
+  - [ ] 19.1 Implement ingestion pipeline script
+    - Accept raw equirectangular JPEG/TIFF from S3 staging bucket
+    - Generate multi-resolution tiles in PSV `tiles` format; convert to WebP (web) and JPEG (mobile fallback)
+    - Upload processed assets to production S3 bucket and invalidate CloudFront cache
+    - Insert/update `scenes` and `hotspots` records in PostgreSQL with asset URLs and hotspot coordinates
+    - _Requirements: 2.1, 3.1_
+
+- [ ] 20. Final integration and wiring
+  - [ ] 20.1 Wire all client screens into the navigation graph
+    - Connect map → station preview → Viewer → info panel → favorites/history → account → settings
+    - Ensure unauthenticated users can reach any scene; gate favorites/history/download behind auth check
+    - _Requirements: 1.3, 5.7, 6.1, 9.1_
+  - [ ] 20.2 Wire API Gateway routing to all backend services
+    - Configure routes for Auth, Station, User, Subscription, and Ad Config services
+    - Apply JWT auth middleware to all authenticated endpoints
+    - _Requirements: 5.5, 5.6_
+  - [ ] 20.3 Wire RevenueCat SDK in mobile client
+    - Initialize RevenueCat on app start; sync `tier` from JWT with RevenueCat customer info
+    - Trigger subscription purchase flow from account settings screen
+    - _Requirements: 8.1, 8.2_
+
+- [ ] 21. Final checkpoint — Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+## Notes
+
+- Tasks marked with `*` are optional and can be skipped for a faster MVP
+- Each task references specific requirements for traceability
+- Checkpoints ensure incremental validation at logical milestones
+- Property tests use **fast-check** with a minimum of 100 iterations per property; tag format: `Feature: nyc-subway-virtual-tour, Property {N}: {property_text}`
+- Unit tests cover specific examples and edge cases (boundary values, error conditions) complementing the property tests
+- The content ingestion pipeline (Task 19) is a prerequisite for the app to have real panoramic content; it can be developed in parallel with the client
